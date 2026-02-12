@@ -1,0 +1,38 @@
+1. Prerequisites and Components
+• Required Components: To successfully add a new user who can sign on to a Facets product, the following elements must be in place:
+    ◦ A Database Management System (DBMS) User ID and password must be established on the database server.
+    ◦ A Facets Individual User record must be created in the Individual User application.
+    ◦ A Facets security profile must be created for the user in the User Setup application.
+• Initial FACETS User Setup: For the very first logon to the Interactive Application in a new deployment, your database administrator must first create a user named FACETS on the database server itself, typically with the password FACETS. This temporary user must have DBO (database owner) rights. Once you have created one or more permanent users via the System Administration (SA) product's User application group, the database administrator should remove this initial FACETS user from the database server for security purposes.
+2. Steps to Create an Individual User
+The process of setting up an individual user involves working within the System Administration (SA) product:
+1. Provide the User ID:
+    ◦ Open the Individual User application (USIN) within the User application group.
+    ◦ Enter the unique User ID in the ID field on the Home page and select Create New Record.
+2. Complete the Individual User Page:
+    ◦ Enter identifying information such as the user's name.
+    ◦ Optionally, enter the user's Signon ID (which can exceed 10 characters if the USE_LONG_SIGNON_ID product parameter is set to Y). This ID is used for logging onto online Facets and/or running Facets batches.
+    ◦ Set the user's status to Active (default) or Not Active.
+3. Assign to Groups (Optional):
+    ◦ Navigate to the Groups page (if applicable) and assign the individual user to one or more existing user groups (either Routing or Security groups) by moving the desired group IDs from the Available Groups list to the Assigned Groups list.
+4. Enter Name and Address (Required):
+    ◦ Navigate to the Address Attachment page to complete the user's name and address details.
+5. Save the Record:
+    ◦ Press CTRL + S or use the File > Save menu option to save the new user.
+3. Creating the Security Profile
+After creating the individual user record, you must define the user's access permissions in the User Setup application (USSU):
+1. Define User Access: In the Product/User page of the User Setup application, select the user's overall User Access level for the product (e.g., FA for Facets or SA for System Administration):
+    ◦ Allowed: Generally grants access unless specifically restricted at a lower level.
+    ◦ Excluded: Generally restricts access unless specifically allowed at a lower level.
+    ◦ Default to Group: Inherits the access setting from the assigned security group.
+    ◦ Not Allowed: Denies access to the product.
+2. Define Access Controls: On the User Security page (accessed from the Open Work tab):
+    ◦ Set Application-Level Security (e.g., ADD, CHG, DEL, NEW, VIEW) for the application Domain (PZAP ID).
+    ◦ Configure Client- and Group-Level Security (Domains $$CI and $$GR) to restrict access to member data associated with specific clients or groups.
+    ◦ Configure Application-Specific and Menu-Level Security (Domain MENU) as needed (e.g., restricting access to specific functions like SAVE or ROUTE).
+3. Set Security Level (Warning Messages/Limits): You must also set a numerical Security Level (0 is highest/most allowed, 9 is lowest/most restricted). This level is used to determine if a user can accept a transaction despite an associated warning message (like a potential duplicate claim or clinical edit) or high-dollar amount exceeding a defined claims limit.
+4. Advanced Security Option: Federated Security
+If your environment uses Facets Federated Security (leveraging systems like Azure AD for authentication), the process changes slightly:
+• DBMS Connection: Users do not need individual DBMS accounts. Facets uses a common user's credentials to establish connections.
+• User Identifier Mapping: When updating an existing user for Federated Security, you must update the USUS_ID_SIGNON field (available in the User/Individual User application in Facets SA) with the User ID returned from the IAM system (e.g., username@domain.com). This ensures the user's historical data and permissions linked to their original USUS_ID are preserved.
+Creating user records in this manner effectively sets the stage for authentication and authorization within the Facets system. This process ensures that when a user subsequently logs in, the system recognizes their identity and applies the correct data access rules and functional permissions.
