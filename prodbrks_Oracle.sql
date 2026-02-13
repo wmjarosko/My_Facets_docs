@@ -1,3 +1,5 @@
+This SQL query analyzes the performance and status of Facets Broker service calls over the past 24 hours by querying the Broker Statistics table (CER_BRKS_BROKER_STATS).
+
 Select SDSD_NAME,BRKS_CALL_SYS_NAME,BRKS_SYS_RETURN_CODE,BRKS_APP_RETURN_CODE,
 avg((extract(hour from BRKS_BRKR_END_DTM)-extract(hour from BRKS_BRKR_BEG_DTM))*3600+
 (extract(minute from BRKS_BRKR_END_DTM)-extract(minute from BRKS_BRKR_BEG_DTM))*60+
