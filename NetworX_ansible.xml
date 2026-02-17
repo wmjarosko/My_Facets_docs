@@ -1,0 +1,568 @@
+# NetworX variables
+networX_pkg: "NetworX_{{ facets_ntwxversion }}.zip"
+jdk_package: "{{ facets_ntwxjdkversion }}_windows-x64_bin.zip"
+jdk_install_path: 'C:\apps\tzg\nwx'
+networX_path: 'C:\apps\tzg\NetworX'
+jdbc_pkg: 'sqljdbc_{{ facets_jdbcversion}}_enu.zip'
+
+javahome: 
+  name: "JAVA_HOME_NWX"
+  path: '{{ jdk_install_path }}\{{ facets_ntwxjdkversion }}'
+
+networX_config_files:
+  - { src: "../templates/Nwx-system.properties.j2", dest: '{{ networX_path }}\config\system.properties' }
+  - { src: "../templates/application.properties.j2", dest: '{{ networX_path }}\config\application.properties' }  
+  - { src: "../templates/setenv.bat.j2", dest: '{{ networX_path }}\bin\win\setenv.bat' }
+  - { src: "../templates/log4j2.xml.j2", dest: '{{ networX_path }}\config\log4j2.xml' }
+  
+  
+  main
+  
+  ---
+#tasks for facets networX role
+- import_tasks: install_java.yml
+- import_tasks: fa_networx_install.yml
+
+inst javahome
+
+##################################
+# Check if Java exists
+##################################
+- name: Check if Java exists
+  ansible.windows.win_stat:
+    path: '{{ jdk_install_path }}\{{ facets_ntwxjdkversion }}'
+  register: jdk_result
+
+##################################
+#Copy JDK to Server
+##################################
+
+- name: Download JDK zip
+  ansible.windows.win_get_url:
+    url: "{{ facets_repository }}/{{ jdk_package }}"
+    validate_certs: "no"
+    dest: "{{ stage }}\\{{ jdk_package }}"
+  when: not jdk_result.stat.exists
+
+- name: Run PowerShell Script to Unzip Java Package
+  ansible.windows.win_powershell:
+    script: |
+      Expand-Archive '{{ stage }}\{{ jdk_package }}' -DestinationPath "{{ jdk_install_path }}"
+  when: not jdk_result.stat.exists
+
+- name: Set JAVA_HOME system environment variable
+  ansible.windows.win_environment:
+    state: present
+    name: "{{ javahome.name }}"
+    value: "{{ javahome.path }}"
+    level: machine
+	
+	
+inst nwx
+##################################
+# Copy networX files to server
+##################################
+
+- name: Check if networX exists
+  ansible.windows.win_stat:
+    path: '{{ networX_path }}\bin\win'
+  register: networX_result
+
+# Get networX zip, acquire checksum dynamically
+- name: Download networX zip
+  ansible.windows.win_get_url:
+    url: "{{ facets_repository }}/{{ networX_pkg }}"
+    validate_certs: "no"
+    dest: '{{ stage }}\{{ networX_pkg }}'
+  when: not networX_result.stat.exists
+
+- name: Run PowerShell Script to Unzip networX Package
+  ansible.windows.win_powershell:
+    script: |
+      Expand-Archive '{{ stage }}\{{ networX_pkg }}' -DestinationPath "{{ networX_path }}"
+  when: not networX_result.stat.exists
+
+##################################
+# Copy JDBC Driver to server
+##################################
+- name: Check if JDBC Driver exists
+  ansible.windows.win_stat:
+    path: '{{ networX_path }}\lib\mssql-jdbc-12.6.2.jre11.jar'
+  register: jdbc_result
+
+# Get networX zip, acquire checksum dynamically
+- name: Download JDBC zip
+  ansible.windows.win_get_url:
+    url: "{{ facets_repository }}/{{ jdbc_pkg }}"
+    validate_certs: "no"
+    dest: '{{ stage }}\{{ jdbc_pkg }}'
+  when: not jdbc_result.stat.exists
+
+- name: Run PowerShell Script to Unzip JDBC Package
+  ansible.windows.win_powershell:
+    script: |
+      Expand-Archive '{{ stage }}\{{ jdbc_pkg }}' -DestinationPath "{{ stage }}\jdbc_extract"
+  when: not jdbc_result.stat.exists
+
+- name: Copy JDBC driver to networX
+  ansible.windows.win_copy:
+    src: '{{ stage }}\jdbc_extract\sqljdbc_12.6\enu\jars\mssql-jdbc-12.6.2.jre11.jar'
+    dest: '{{ networX_path }}\lib'
+    remote_src: true
+  when: not jdbc_result.stat.exists
+
+# #################################
+# Copy NetworX config files
+# #################################
+
+- name: Copy NetworX config files
+  ansible.windows.win_template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+  with_items: "{{ networX_config_files }}"
+
+- name: Run PowerShell Script to Create Firewall Rules for networX
+  ansible.windows.win_powershell:
+    script: |
+      $Rules = @(
+        [PSCustomObject]@{Name = "networX Port"; Port = "8090"},
+        [PSCustomObject]@{Name = "VnetworX Port"; Port = "8092"}
+      )
+      
+      $returnValue = 0
+      foreach($Rule in $Rules)
+      {
+        $RuleExists = Get-NetFirewallRule -Name $Rule.Name -ErrorAction SilentlyContinue
+        
+        if(!$RuleExists)
+        {
+          New-NetFirewallRule -DisplayName "$($Rule.Name)-Inbound" -Description $Rule.Name -Name $Rule.Name -Direction Inbound -Action Allow -Profile Domain -LocalPort $Rule.Port -Protocol TCP
+          $returnValue = 1
+        }
+      }
+      return $returnValue
+  register: firewall_result
+  changed_when: firewall_result.output[0] == 1
+
+  ##################################
+# Create services
+##################################
+
+- name: Check if NetworX Service exists
+  win_service:
+    name: "NetworX_{{ facets_env }}"
+  register: nwx_service_result
+
+- name: Install NetworX Service
+  ansible.windows.win_command: 
+  args:
+    chdir: '{{ networX_path }}\bin\win'
+    cmd: install_service.bat -Noprompt
+  when: not nwx_service_result.exists
+
+##################################
+# Start NetworX service
+##################################
+
+- name: Start NetworX Service
+  ansible.windows.win_service:
+    name: "NetworX_{{ facets_env }}"
+    state: started
+
+###############################################
+# Add Event Source for Restarts
+###############################################
+- name: create NetworX Custom Event Log Sources if it does not exist
+  ansible.windows.win_powershell:
+    script: |
+      $returnCode = 0
+      $LogSource = "NetworX_Restart"      
+      
+      $LogSourceExists = [System.Diagnostics.EventLog]::SourceExists($LogSource) 
+      if(!$LogSourceExists){
+        New-EventLog -LogName Application -Source $LogSource
+        $returnCode = 1
+      }
+      
+      return $returnCode
+  register: eventlog_result
+  changed_when: eventlog_result.output[0] == 1   
+  
+  
+  
+app.properties.j2
+############# Uncomment this section for SQL Server #############
+spring.datasource.driverClassName=com.microsoft.sqlserver.jdbc.SQLServerDriver
+spring.datasource.url=jdbc:sqlserver://{{ jdbc_sql_url }};databaseName={{ jdbc_sql_dbname }};trustServerCertificate=true
+
+############# Uncomment this secion for Oracle #############
+#spring.datasource.driverClassName=oracle.jdbc.driver.OracleDriver
+#spring.datasource.url=jdbc:oracle:thin:@//<HOSTNAME>:<PORT>/<SERVICENAME>
+
+spring.datasource.username= {{ jdbc_user }}
+spring.datasource.password= {{ jdbc_pass }}
+
+spring.datasource.type=org.apache.commons.dbcp2.BasicDataSource
+spring.datasource.dbcp2.default-auto-commit=true
+spring.datasource.dbcp2.initial-size=10
+spring.datasource.dbcp2.max-total=100
+spring.datasource.dbcp2.max-idle=20
+spring.datasource.dbcp2.max-open-prepared-statements=0
+spring.datasource.dbcp2.remove-abandoned-on-borrow=true
+spring.datasource.dbcp2.remove-abandoned-timeout=60
+
+
+# Embedded ActiveMQ Configuration
+#spring.activemq.broker-url=tcp://<HOSTNAME>:61616
+#spring.activemq.in-memory=true
+#networx.datatransfer.queue=FacetsPricerDataTransferQueue
+
+########  SSL Security  ########
+#server.ssl.enabled=true
+
+# Define SSL bundle
+#spring.ssl.bundle.jks=networx-ssl
+# Default to PKCS12.   If using JKS change this value
+#spring.ssl.bundle.jks.networx-ssl.keystore.type=PKCS12
+# Path to your keystore:   Example file:/C:/certificateName.pfx
+#spring.ssl.bundle.jks.networx-ssl.keystore.location=file:/
+# Provide password to keystore
+#spring.ssl.bundle.jks.networx-ssl.keystore.password=
+# If multiple certificates in your keystore, provide alias and password of the certificate
+#spring.ssl.bundle.jks.web-server.key.alias=
+#spring.ssl.bundle.jks.web-server.key.password=
+
+# Attach SSL bundle to server
+#server.ssl.bundle=networx-ssl
+
+############# Server ########################
+server.port=8090
+
+
+log4j2.xml.j2
+<?xml version="1.0" encoding="UTF-8" ?>
+
+<Configuration monitorInterval="60">
+
+	<Properties>
+		<Property name="logDirectory">logs</Property>
+		<Property name="LOG_PATTERN">%d %-5p %c %x - %msg%n</Property>
+	</Properties>
+
+	<Appenders>
+		<RollingFile name="appLog"
+			fileName="${logDirectory}/facets.log"
+			filePattern="${logDirectory}/facets-%i.log">
+			<PatternLayout>
+				<pattern>${LOG_PATTERN}</pattern>
+			</PatternLayout>
+			<Policies>
+				<SizeBasedTriggeringPolicy size="20 MB" />
+			</Policies>
+			<DefaultRolloverStrategy max="10" compressionLevel="0" />
+		</RollingFile>
+		<!--
+		<RollingFile name="springLog"
+			fileName="${logDirectory}/spring.log"
+			filePattern="${logDirectory}/spring-%i.log">
+			<PatternLayout>
+				<pattern>${LOG_PATTERN}</pattern>
+			</PatternLayout>
+			<Policies>
+				<SizeBasedTriggeringPolicy size="20 MB" />
+			</Policies>
+			<DefaultRolloverStrategy max="10" compressionLevel="0" />
+		</RollingFile>
+		<RollingFile name="hibernateLog"
+			fileName="${logDirectory}/hibernate.log"
+			filePattern="${logDirectory}/hibernate-%i.log">
+			<PatternLayout>
+				<pattern>${LOG_PATTERN}</pattern>
+			</PatternLayout>
+			<Policies>
+				<SizeBasedTriggeringPolicy size="20 MB" />
+			</Policies>
+			<DefaultRolloverStrategy max="10" compressionLevel="0" />
+		</RollingFile>
+		-->
+		<!-- <Console name="Console" target="SYSTEM_OUT">
+			<PatternLayout
+				pattern="[%-5level] %d{yyyy-MM-dd} [%t] %c{1} - %msg%n" />
+		</Console> -->
+	</Appenders>
+
+	<Loggers>
+		<logger name="com.trizetto" level="INFO" additivity="false">
+			<appender-ref ref="appLog" />
+		</logger>
+		
+		<logger name="org.springframework" level="INFO" additivity="false">
+			<appender-ref ref="appLog" />
+		</logger>
+	<!--	<logger name="org.hibernate" level="DEBUG" additivity="false">
+			<appender-ref ref="hibernateLog" />
+		</logger>
+		-->
+		<Root level="WARN" additivity="false">
+			<AppenderRef ref="appLog" />
+			<!--
+			<AppenderRef ref="Console" />
+			-->
+		</Root>
+	</Loggers>
+
+</Configuration>
+
+
+
+mwx-system.properties.j2
+# all this properties are added at JVM system properties at startup
+# here some default Apache TomEE system properties
+# for more information please see http://openejb.apache.org/properties-listing.html
+
+com.trizetto.networx.logDirectory=../logs
+com.trizetto.naming.provider.url.protocol=tcp://
+com.trizetto.jms.jndi.intialContextFactory=org.apache.activemq.jndi.ActiveMQInitialContextFactory
+
+# set this property to false if you experience TomEE hanging
+# when deploying war.
+openejb.scanning.inheritance.asynchronous=false
+
+openejb.check.classloader = true
+openejb.check.classloader.verbose = true
+
+#openejb.classloader.forced-load=org.quartz
+
+# tomee.jaxws.subcontext = webservices
+# tomee.jaxws.oldsubcontext = false
+
+# if you want to propagate a deployment on a cluster when a tomcat cluster is defined
+# tomee.cluster.deployment = false
+
+# openejb.system.apps = true
+# openejb.servicemanager.enabled = true
+# openejb.jmx.active = false
+# openejb.descriptors.output = false
+# openejb.strict.interface.declaration = false
+# openejb.conf.file = conf/tomee.xml
+# openejb.debuggable-vm-hackery = false
+# openejb.validation.skip = false
+openejb.webservices.enabled = false
+#openejb.validation.output.level = VERBOSE
+# openejb.user.mbeans.list = *
+# openejb.deploymentId.format = {appId}/{ejbJarId}/{ejbName}
+# openejb.jndiname.format = {deploymentId}{interfaceType.annotationName}
+openejb.deployments.classpath.exclude=.*
+openejb.deployments.classpath.include=
+# openejb.deployments.package.include = .*
+# openejb.deployments.package.exclude = 
+# openejb.autocreate.jta-datasource-from-non-jta-one = true
+# openejb.altdd.prefix = 
+# org.apache.openejb.default.system.interceptors = 
+# openejb.jndiname.failoncollision = true
+# openejb.wsAddress.format = /{ejbDeploymentId}
+# org.apache.openejb.server.webservices.saaj.provider = 
+# openejb.nobanner = true
+# openejb.offline = false
+# openejb.jmx.active = true
+# openejb.exclude-include.order = include-exclude
+# openejb.additional.exclude =
+# openejb.additional.include =
+# openejb.crosscontext = false
+# openejb.jsessionid-support = 
+# openejb.myfaces.disable-default-values = true
+# openejb.web.xml.major = 
+# openjpa.Log = log4j
+# openejb.jdbc.log = false
+# javax.persistence.provider = org.apache.openjpa.persistence.PersistenceProviderImpl
+# javax.persistence.transactionType = 
+# javax.persistence.jtaDataSource = 
+# javax.persistence.nonJtaDataSource = 
+# These properties are only for cxf service (SOAP webservices) and TomEE+
+# If you don't use special tricks and sun default implementation, uncommenting these 4 lines forces TomEE to use it without overhead at all = 
+#
+# javax.xml.soap.MessageFactory = com.sun.xml.messaging.saaj.soap.ver1_1.SOAPMessageFactory1_1Impl
+# javax.xml.soap.SOAPFactory = com.sun.xml.messaging.saaj.soap.ver1_1.SOAPFactory1_1Impl
+# javax.xml.soap.SOAPConnectionFactory = com.sun.xml.messaging.saaj.client.p2p.HttpSOAPConnectionFactory
+# javax.xml.soap.MetaFactory = com.sun.xml.messaging.saaj.soap.SAAJMetaFactoryImpl
+# NetworX Properties
+# These are required
+hibernate.dialect = org.hibernate.dialect.SQLServerDialect
+log4j2.configurationFile=../conf/log4j2.xml
+# Other optional properties
+codeGroupCacheStart = 1800
+codeGroupCacheEnd = 0600
+#confirmDatabaseMatch =
+#XML_FILE_OUT_DIR =
+AGR_CONFIG_PRINT_DIR = H:/
+#ACCOMMODATE_CUSTOM_TYPE_OF_BILL_FOR_APC_PRICING =
+#ALLOW_470 =
+#EOB_EXCD =
+#InstanceName =
+#STRIP_LEADING_ZERO_DRG =
+#INIT_RS_EXCEPTION_FLAG =
+#OutPatientDateCheck =
+#MANUAL_OVR =
+#DISALL_AX =
+DISALL_CDMD = 1
+DISALL_CDML = 1
+#READ_BUNDLE_LINE_IND =
+Save_As_New_Term_Date = Y
+QualifyOnICD-10_Date = N
+#cache.properties =
+
+Optum_WebService_ADDRESS = http://{{ facets_oegserver }}:81/EZGWebAPI/api/Claim/PostToOptimizer
+#3MGPSInterfaceURL =
+#Three_M_GPS_PATH =
+
+REPRICE_APPLY_GLOBAL_HEADER_DATE = Yes
+General.ScheduleImportPath = C:\\apps\\tzg\\NetworX
+
+setenv.bat.j2
+::*******************************************************************************
+
+:: Copyright (c) 2023-2024 Cognizant TriZetto Software Group, Inc. All rights reserved.
+
+:: 
+
+:: This software is the confidential and proprietary information of
+
+:: Cognizant TriZetto Software Group, Inc.  or its affiliates ("Confidential
+
+:: Information"). You shall not disclose such Confidential Information and
+
+:: shall use it only in accordance with the terms of the license agreement
+
+:: you entered into with Cognizant TriZetto Software Group, Inc. or
+
+:: its predecessor.
+
+:: ******************************************************************************
+
+@echo off
+ 
+:: The name of the service. If empty, NetworXFacetsPricer will be used
+
+set ServiceName=NetworX_{{ facets_env }}
+ 
+:: A different Java home can be used other than the one defined by JAVA_HOME environment variable.
+
+set JavaHome="%JAVA_HOME_NWX%"
+ 
+:: List of options in the form of -D or -X that will be passed to the JVM. The options are separated 
+
+:: using either # or ; characters. If you need to embed # or ; put them inside single quotes.
+
+set JvmOptions=""
+ 
+:: Maximum memory pool size (MB)
+
+set JvmMx=2048
+ 
+:: Initial memory pool size (MB)
+
+set JvmMs=1024
+ 
+:: Specifies the name of the account under which the service should run. 
+
+:: If empty, the default LocalService account will be used.
+
+:: Use an account name in the form DomainName\UserName. The service process will be logged on as this user. 
+
+:: If the account belongs to the built-in domain, you can specify .\UserName 
+
+:: Note that the Service Control Manager does not accept localised forms of the standard 
+
+:: names so to use them you need to specify NT Authority\LocalService, NT Authority\NetworkService or LocalSystem as appropriate.
+
+set ServiceUser=
+ 
+:: Password for user account set by ServiceUser parameter. Ignored if ServiceUser is empty.
+
+set ServicePassword=
+ 
+:: Defines the path for logging. Creates the directory if necessary, when service is started.
+
+set LogPath=%~dp0..\..\logs
+ 
+:: Defines the logging level and can be either Error, Warn Info, Debug, or Trace. (Case insensitive)
+
+set LogLevel=Debug
+ 
+ 
+log4j2.xml
+<?xml version="1.0" encoding="UTF-8" ?>
+
+<Configuration monitorInterval="60">
+
+	<Properties>
+		<Property name="logDirectory">logs</Property>
+		<Property name="LOG_PATTERN">%d %-5p %c %x - %msg%n</Property>
+	</Properties>
+
+	<Appenders>
+		<RollingFile name="appLog"
+			fileName="${logDirectory}/facets.log"
+			filePattern="${logDirectory}/facets-%i.log">
+			<PatternLayout>
+				<pattern>${LOG_PATTERN}</pattern>
+			</PatternLayout>
+			<Policies>
+				<SizeBasedTriggeringPolicy size="20 MB" />
+			</Policies>
+			<DefaultRolloverStrategy max="10" compressionLevel="0" />
+		</RollingFile>
+		<!--
+		<RollingFile name="springLog"
+			fileName="${logDirectory}/spring.log"
+			filePattern="${logDirectory}/spring-%i.log">
+			<PatternLayout>
+				<pattern>${LOG_PATTERN}</pattern>
+			</PatternLayout>
+			<Policies>
+				<SizeBasedTriggeringPolicy size="20 MB" />
+			</Policies>
+			<DefaultRolloverStrategy max="10" compressionLevel="0" />
+		</RollingFile>
+		<RollingFile name="hibernateLog"
+			fileName="${logDirectory}/hibernate.log"
+			filePattern="${logDirectory}/hibernate-%i.log">
+			<PatternLayout>
+				<pattern>${LOG_PATTERN}</pattern>
+			</PatternLayout>
+			<Policies>
+				<SizeBasedTriggeringPolicy size="20 MB" />
+			</Policies>
+			<DefaultRolloverStrategy max="10" compressionLevel="0" />
+		</RollingFile>
+		-->
+		<!-- <Console name="Console" target="SYSTEM_OUT">
+			<PatternLayout
+				pattern="[%-5level] %d{yyyy-MM-dd} [%t] %c{1} - %msg%n" />
+		</Console> -->
+	</Appenders>
+
+	<Loggers>
+		<logger name="com.trizetto" level="INFO" additivity="false">
+			<appender-ref ref="appLog" />
+		</logger>
+		
+		<logger name="org.springframework" level="INFO" additivity="false">
+			<appender-ref ref="appLog" />
+		</logger>
+	<!--	<logger name="org.hibernate" level="DEBUG" additivity="false">
+			<appender-ref ref="hibernateLog" />
+		</logger>
+		-->
+		<Root level="WARN" additivity="false">
+			<AppenderRef ref="appLog" />
+			<!--
+			<AppenderRef ref="Console" />
+			-->
+		</Root>
+	</Loggers>
+
+</Configuration> 
+  
+  
+  
